@@ -304,9 +304,9 @@ exports.LoadUtils = () => {
 
         let vcardOptions = {};
         if (options.contactCard) {
-            let contact = window
+            let contact = await window
                 .require('WAWebCollections')
-                .Contact.get(options.contactCard);
+                .Contact.find(options.contactCard);
             vcardOptions = {
                 body: window
                     .require('WAWebFrontendVcardUtils')
@@ -316,8 +316,10 @@ exports.LoadUtils = () => {
             };
             delete options.contactCard;
         } else if (options.contactCardList) {
-            let contacts = options.contactCardList.map((c) =>
-                window.require('WAWebCollections').Contact.get(c),
+            let contacts = await Promise.all(
+                options.contactCardList.map((c) =>
+                    window.require('WAWebCollections').Contact.find(c),
+                ),
             );
             let vcards = contacts.map((c) =>
                 window
@@ -349,7 +351,7 @@ exports.LoadUtils = () => {
                             .vcardGetNameFromParsed(parsed),
                     };
                 }
-            } catch (_) {
+            } catch (ignoredError) {
                 // not a vcard
             }
         }
@@ -377,7 +379,7 @@ exports.LoadUtils = () => {
                 content = options.buttons.body;
                 caption = content;
             } else {
-                caption = options.caption ? options.caption : ' '; //Caption can't be empty
+                caption = options.caption ? options.caption : ' '; // Caption can't be empty
             }
             buttonOptions = {
                 productHeaderImageRejected: false,
@@ -873,7 +875,7 @@ exports.LoadUtils = () => {
                         .require('WAWebCollections')
                         .WAWebNewsletterCollection.find(chatWid);
                 }
-            } catch (err) {
+            } catch (ignoredError) {
                 chat = null;
             }
         } else {
@@ -974,14 +976,12 @@ exports.LoadUtils = () => {
                 window.require('WAWebCollections').GroupMetadata ||
                 window.require('WAWebCollections').WAWebGroupMetadataCollection;
             await groupMetadata.update(chatWid);
-            chat.groupMetadata.participants._models
-                .filter((x) => x.id?._serialized?.endsWith('@lid'))
-                .forEach(
-                    (x) =>
-                        x.contact?.phoneNumber &&
-                        (x.id = x.contact.phoneNumber),
-                );
-            model.groupMetadata = chat.groupMetadata.serialize();
+            const { toPn } = window.require('WAWebLidMigrationUtils');
+            const serializedMetadata = chat.groupMetadata.serialize();
+            for (const p of serializedMetadata.participants || []) {
+                p.id = toPn(p.id) ?? p.id;
+            }
+            model.groupMetadata = serializedMetadata;
             model.isReadOnly = chat.groupMetadata.announce;
         }
 
@@ -1025,6 +1025,14 @@ exports.LoadUtils = () => {
 
     window.WWebJS.getContactModel = (contact) => {
         let res = contact.serialize();
+
+        const wid = window
+            .require('WAWebWidFactory')
+            .createWidFromWidLike(contact.id);
+        if (wid.isLid() && contact.phoneNumber) {
+            res.id = contact.phoneNumber;
+        }
+
         res.isBusiness =
             contact.isBusiness === undefined ? false : contact.isBusiness;
 
@@ -1033,6 +1041,16 @@ exports.LoadUtils = () => {
         }
 
         res.isBlocked = contact.isContactBlocked;
+        if (!res.isBlocked) {
+            const alt = window
+                .require('WAWebApiContact')
+                .getAlternateUserWid(wid);
+            if (alt) {
+                res.isBlocked = !!window
+                    .require('WAWebCollections')
+                    .Blocklist.get(alt);
+            }
+        }
 
         const ContactMethods = window.require('WAWebContactGetters');
         res.isMe = ContactMethods.getIsMe(contact);
@@ -1057,17 +1075,18 @@ exports.LoadUtils = () => {
     };
 
     window.WWebJS.getContact = async (contactId) => {
-        const wid = window.require('WAWebWidFactory').createWid(contactId);
-        let contact = await window
+        const contactWid = window
+            .require('WAWebWidFactory')
+            .createWid(contactId);
+        const contact = await window
             .require('WAWebCollections')
-            .Contact.find(wid);
-        if (contact.id._serialized.endsWith('@lid')) {
-            contact.id = contact.phoneNumber;
+            .Contact.find(contactWid);
+        if (contact.isBusiness || contact.isEnterprise) {
+            const bizProfile = await window
+                .require('WAWebCollections')
+                .BusinessProfile.find(contactWid);
+            bizProfile.profileOptions && (contact.businessProfile = bizProfile);
         }
-        const bizProfile = await window
-            .require('WAWebCollections')
-            .BusinessProfile.fetchBizProfile(wid);
-        bizProfile.profileOptions && (contact.businessProfile = bizProfile);
         return window.WWebJS.getContactModel(contact);
     };
 
@@ -1075,8 +1094,16 @@ exports.LoadUtils = () => {
         const contacts = window
             .require('WAWebCollections')
             .Contact.getModelsArray();
-        return contacts.map((contact) =>
-            window.WWebJS.getContactModel(contact),
+        return Promise.all(
+            contacts.map(async (contact) => {
+                if (contact.isBusiness || contact.isEnterprise) {
+                    await window
+                        .require('WAWebCollections')
+                        .BusinessProfile.find(contact.id)
+                        .catch(() => {});
+                }
+                return window.WWebJS.getContactModel(contact);
+            }),
         );
     };
 
@@ -1166,7 +1193,7 @@ exports.LoadUtils = () => {
             );
 
             return waveform;
-        } catch (e) {
+        } catch (ignoredError) {
             return undefined;
         }
     };
@@ -1403,7 +1430,7 @@ exports.LoadUtils = () => {
                         return base64Image;
                     }
                 }
-            } catch (error) {
+            } catch (ignoredError) {
                 /* empty */
             }
         }
@@ -1440,7 +1467,7 @@ exports.LoadUtils = () => {
                 rpcResult.value.addParticipant[0]
                     .addParticipantsParticipantAddedOrNonRegisteredWaUserParticipantErrorLidResponseMixinGroup
                     .value.addParticipantsParticipantMixins;
-        } catch (err) {
+        } catch (ignoredError) {
             data.code = 400;
             return data;
         }
@@ -1603,7 +1630,7 @@ exports.LoadUtils = () => {
                     ));
             }
             return result;
-        } catch (err) {
+        } catch (ignoredError) {
             return [];
         }
     };
