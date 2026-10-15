@@ -501,6 +501,12 @@ exports.LoadUtils = () => {
             ...extraOptions,
         };
 
+        // Avoid a WhatsApp Web media-model ID collision.
+        // MediaData exposes __x_id, which must not replace the outgoing MsgKey.
+        if (message.__x_id) {
+            delete message.__x_id;
+        }
+
         // Bot's won't reply if canonicalUrl is set (linking)
         if (botOptions) {
             delete message.canonicalUrl;
